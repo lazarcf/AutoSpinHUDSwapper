@@ -2,6 +2,9 @@
 #include "ui_mainwindow.h"
 #include <QFile>
 #include <QMessageBox>
+#include <QInputDialog>
+#include <QFileDialog>
+#include <functional>
 
 QString get_appdata_folder();
 
@@ -16,13 +19,152 @@ QString get_appdata_folder();
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow),
+    m_settings("GTO Software", "AutoSpinHUDSwapper"),
     m_icon_pos(-1, -1)
 {
     ui->setupUi(this);
 
+    if (!m_settings.contains("hud_index"))
+        m_settings.setValue("hud_index", 7);
+
+    ui->hud_index_edit->setText(m_settings.value("hud_index").toString());
+
+    if (m_settings.contains("hh_path")) {
+        ui->hh_path_edit->setText(m_settings.value("hh_path").toString());
+        m_hh_path = m_settings.value("hh_path").toString();
+    }
+
+    if (m_settings.contains("hero")) {
+        ui->hero_name_edit->setText(m_settings.value("hero").toString());
+        m_username = ui->hero_name_edit->text();
+    }
+
+    // Setup tray icon
+    QIcon * icon = new QIcon(":/resources/swapper_icon.png");
+    this->setWindowIcon(*icon);
+    m_systray.setIcon(*icon);
+    m_systray.show();
+
+    QAction *set_hh_action = new QAction("Set Hand History path", &m_systray_menu);
+    QAction *set_hero_name_action = new QAction("Set Hero name", &m_systray_menu);
+    QAction *set_hud_index_action = new QAction("Set HU HUD index", &m_systray_menu);
+
+    QAction *show_action = new QAction("Show / Hide", &m_systray_menu);
+    QAction *quit_action = new QAction("Exit", &m_systray_menu);
+
+    m_systray_menu.addAction(set_hh_action);
+    m_systray_menu.addAction(set_hero_name_action);
+    m_systray_menu.addAction(set_hud_index_action);
+
+    m_systray_menu.addSeparator();
+
+    m_systray_menu.addAction(show_action);
+    m_systray_menu.addAction(quit_action);
+
+    connect(set_hh_action, SIGNAL(triggered(bool)), this, SLOT(set_hh_path_slot()));
+    connect(set_hero_name_action, SIGNAL(triggered(bool)), this, SLOT(set_hero_name_slot()));
+    connect(set_hud_index_action, SIGNAL(triggered(bool)), this, SLOT(set_hud_index_slot()));
+
+    connect(show_action, SIGNAL(triggered(bool)), this, SLOT(show_hide_window()));
+    connect(quit_action, SIGNAL(triggered(bool)), this, SLOT (exit_slot()));
+
+    connect (&m_systray, SIGNAL(activated(QSystemTrayIcon::ActivationReason)), this, SLOT (tray_activated_slot(QSystemTrayIcon::ActivationReason)));
+
+    m_systray.setContextMenu(&m_systray_menu);
+    m_systray.show();
+
+
+    QString warning;
+
+    if (!m_settings.contains("hero"))
+        warning = "You must set the hero name";
+
+    if (!m_settings.contains("hh_path")) {
+        if (warning.length() == 0)
+            warning = "You must set the hand history path";
+        else
+            warning += " and hand history path";
+    }
+
+    if (warning.length() > 0)
+        m_systray.showMessage("Warning", warning, QSystemTrayIcon::Warning);
+
     m_fs_timer = new QTimer (this);
     QObject::connect(m_fs_timer, SIGNAL (timeout()), this, SLOT (fs_check()));
     m_fs_timer->start(1000);
+
+    QTimer::singleShot(900, this, SLOT(switch_pending()));
+}
+
+void MainWindow::show_hide_window() {
+    if (this->isHidden()) {
+        this->show();
+        ShowWindow ((HWND)this->effectiveWinId(), SW_SHOWNORMAL);
+    }
+    else
+        this->hide();
+}
+
+void MainWindow::tray_activated_slot(QSystemTrayIcon::ActivationReason reason) {
+    if (reason == QSystemTrayIcon::DoubleClick)
+        show_hide_window();
+}
+
+void MainWindow::changeEvent (QEvent *) {
+    if (this->windowState() & Qt::WindowMinimized) {
+        this->hide();
+    }
+}
+
+void MainWindow::exit_slot() {
+    m_systray.hide();
+    exit(0);
+}
+
+void MainWindow::set_hud_index_slot() {
+    bool ok;
+    int index = QInputDialog::getInt(0, "Set HUD index", "HUD index : ", m_settings.value("hud_index").toInt(), 1, 15, 1, &ok);
+
+    if (ok) {
+        m_settings.setValue("hud_index", index);
+
+        QMessageBox::information(0, "Info", "Successfully set hud index to " + QString::number(index));
+    }
+}
+
+void MainWindow::set_hero_name_slot() {
+    QString hero;
+    if (m_settings.contains("hero"))
+        hero = m_settings.value("hero").toString();
+
+    bool ok;
+    hero = QInputDialog::getText(0, "Set Hero name", "Hero name : ", QLineEdit::Normal, hero, &ok);
+
+    if (ok && hero != "") {
+        m_settings.setValue("hero", hero);
+
+        ui->hero_name_edit->setText(hero);
+        m_username = ui->hero_name_edit->text();
+        QMessageBox::information(0, "Info", "Successfully set hero name to '" + hero + "'");
+    }
+}
+
+void MainWindow::set_hh_path_slot() {
+    QString start_dir = "C:/";
+    if (m_settings.contains("hh_path"))
+        start_dir = m_settings.value("hh_path").toString();
+
+    QString path = QFileDialog::getExistingDirectory(0, "Open Directory", start_dir, QFileDialog::ShowDirsOnly);
+
+    qDebug() << "Setting hh_path to : " << path;
+
+    if (path.length() > 0) {
+        m_settings.setValue("hh_path", path);
+
+        m_hh_path = path;
+
+        QMessageBox::information(0, "Info", "Successfully set hand history path to '" + path + "'");
+    }
 }
 
 bool MainWindow::search_hh_file(QString path)
@@ -42,7 +184,7 @@ bool MainWindow::search_hh_file(QString path)
         if (line.contains("finished the tournament in 3rd place")) {
             QString username = line.left(line.indexOf("finished")-1);
 
-            //log (username + " has left in 3rd place");
+            log (username + " has left in 3rd place");
 
             if (username.trimmed().toLower() != m_username.trimmed().toLower()) {
                 finished = true;
@@ -62,18 +204,24 @@ bool MainWindow::search_hh_file(QString path)
 
 void MainWindow::fs_check()
 {
+    //log (m_hh_path);
     QFileInfoList entries = QDir(m_hh_path).entryInfoList();
 
     auto ps_windows = get_windows (get_pid ("PokerStars.exe"));
 
+    //log (QString("Searching %1 entries, found %2 pokerstars windows").arg(entries.length()).arg(ps_windows.length()));
+
     foreach (const QFileInfo & entry, entries) {
+        //log (entry.filePath());
         if (entry.isFile() && entry.baseName().startsWith("HH") && !m_old_files.contains(entry.filePath())) {
             QString tourney_id = entry.baseName().split(" ")[1].mid(1);
 
             foreach (cWindow window, ps_windows) {
                 if (window.title.contains(tourney_id) && search_hh_file (entry.filePath())) {
                     log ("Switching hud for window " + QString::number(quintptr(window.hwnd),16));
-                    switch_hud (window.hwnd);
+
+                    m_pending_switches.insert(window.hwnd);
+                    switch_hud(window.hwnd);
                     break;
                 }
             }
@@ -115,7 +263,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::test_switch()
 {
-    auto ps_windows = get_windows (get_pid ("PokerTracker4.exe"));
+    /*auto ps_windows = get_windows (get_pid ("PokerTracker4.exe"));
     HWND parent_window = NULL;
 
     foreach (cWindow window, ps_windows) {
@@ -219,7 +367,7 @@ void MainWindow::test_switch()
             }
         }
         Sleep (10);
-    }
+    }*/
 }
 
 
@@ -230,4 +378,61 @@ void MainWindow::log(QString str) {
 
 void MainWindow::on_pushButton_clicked()
 {
+    int x = 647;
+    int y = 24;
+
+    DWORD            hud_pid        = get_pid("PokerTrackerHud4.exe");
+    QVector<cWindow> hud_windows    = get_windows(hud_pid);
+
+    foreach (auto window, hud_windows) {
+        send_click (x, y, window.hwnd);
+        qDebug() << "Sent click to " << QString::number ((quintptr)window.hwnd, 16) << " | " << window.rect;
+        QMessageBox::information(this, "", "next?");
+    }
+}
+
+void MainWindow::on_hero_name_edit_editingFinished()
+{
+    if (m_settings.contains("hero") && ui->hero_name_edit->text() == m_settings.value("hero").toString())
+        return;
+
+    m_settings.setValue("hero", ui->hero_name_edit->text());
+    m_username = ui->hero_name_edit->text();
+
+    QMessageBox::information(0, "Info", "Successfully set hero name to '" + ui->hero_name_edit->text() + "'");
+}
+
+void MainWindow::on_hud_index_edit_editingFinished()
+{
+    if (m_settings.contains("hud_index") && ui->hud_index_edit->text().trimmed().toInt() == m_settings.value("hud_index").toInt())
+        return;
+
+    bool ok = false;
+    int index = ui->hud_index_edit->text().toInt(&ok);
+
+    if (!ok || index < 1) {
+        QMessageBox::warning(0, "Warning", "HUD index must be a number bigger than 1");
+        ui->hud_index_edit->setText(m_settings.value("hud_index").toString());
+        return;
+    }
+
+    m_settings.setValue("hud_index", index);
+
+    QMessageBox::information(0, "Info", "Successfully set hud index to " + ui->hud_index_edit->text());
+}
+
+void MainWindow::on_hh_path_button_clicked()
+{
+    set_hh_path_slot();
+
+    if (m_settings.contains("hh_path"))
+        ui->hh_path_edit->setText(m_settings.value("hh_path").toString());
+}
+
+void MainWindow::switch_pending() {
+    foreach(HWND win, m_pending_switches) {
+        switch_hud(win);
+    }
+
+    QTimer::singleShot(900, this, SLOT(switch_pending()));
 }

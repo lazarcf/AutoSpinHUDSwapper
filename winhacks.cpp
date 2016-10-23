@@ -70,7 +70,7 @@ void MainWindow::switch_hud (HWND parent_window)
     QVector<cWindow> hud_windows    = get_windows(hud_pid);
     RECT             pwr;
     cWindow          hud_win;
-    HWND             command_window;
+    HWND             command_window = 0;
 
     // Search for HUD window which overlays parent_window
 
@@ -83,52 +83,57 @@ void MainWindow::switch_hud (HWND parent_window)
                 window.rect.bottom() >= pwr.bottom && window.rect.right() >= pwr.right) {
             hud_win = window;
         }
+
         if (window.class_name == "wxWindowNR")
             command_window = window.hwnd;
     }
-    log ("Found hud window " + QString::number(quintptr(hud_win.hwnd),16));
 
-    QPixmap icon   = QPixmap("C:\\Users\\Claudiu\\Desktop\\output\\icon.bmp");
+    if  (hud_win.hwnd == 0) {
+        log ("Failed to find hud window");
+        return;
+    }
+
+    if (command_window == 0) {
+        log ("Failed to find command window");
+        return;
+    }
+
+    QString rect_info = QString (" | location = (%1, %2) | size = %3x%4").arg(hud_win.rect.x()).arg(hud_win.rect.y()).arg(hud_win.rect.width()).arg(hud_win.rect.height());
+    log ("Found hud window " + QString::number(quintptr(hud_win.hwnd),16) + rect_info);
+
+    QPixmap icon   = QPixmap(":/resources/pt4_icon.png");
     QPixmap screen = QPixmap::grabWindow(QApplication::desktop()->winId());
     int icon_x = -1, icon_y = -1;
 
     // Search for icon in the top section of the overlay window
 
-    // Retry for 15 seconds, window might not be visible
-    int search_retry_counter = 31;
+    screen = QPixmap::grabWindow(QApplication::desktop()->winId());
 
-    while (search_retry_counter--) {
-        if (search_retry_counter < 30)
-            Sleep (500);
-
-        screen = QPixmap::grabWindow(QApplication::desktop()->winId());
-
-        if (m_icon_pos.x() != -1) {
-            if (exact_icon_search (screen, icon, hud_win.rect.x() + m_icon_pos.x(), hud_win.rect.y() + m_icon_pos.y()))
-                break;
-        }
-
+    if (m_icon_pos.x() == -1 || !exact_icon_search (screen, icon, hud_win.rect.x() + m_icon_pos.x(), hud_win.rect.y() + m_icon_pos.y())) {
         log (QString("searching for icon @ %1x%2 , %3x%4").arg(hud_win.rect.x()).arg(hud_win.rect.y()).arg(hud_win.rect.width()).arg(150));
+
+        int height = 200;
+        if (hud_win.rect.height() < height)
+            height = hud_win.rect.height();
 
         region_icon_search (screen, icon,
                             hud_win.rect.x(), hud_win.rect.y(),
-                            hud_win.rect.width(), 150,
+                            hud_win.rect.width(), height,
                             icon_x, icon_y);
-        if (icon_x == -1)
-            log ("Did not find icon, retrying");
+
+        if (icon_x == -1) {
+            log ("Failed to find icon");
+            return;
+        }
         else {
-            m_icon_pos = QPoint (icon_x - hud_win.rect.x(), icon_y - hud_win.rect.y());
-            break;
+            m_icon_pos.setX(icon_x);
+            m_icon_pos.setY(icon_y);
         }
     }
 
-    if (search_retry_counter <= 0) {
-        log ("Error, could not find icon");
-        return;
-    }
-
-    icon_x = hud_win.rect.x() + m_icon_pos.x();
-    icon_y = hud_win.rect.y() + m_icon_pos.y();
+    // not sure why i added this?
+    //icon_x = hud_win.rect.x() + m_icon_pos.x();
+    //icon_y = hud_win.rect.y() + m_icon_pos.y();
 
     log(QString("Found icon at %1x%2").arg(m_icon_pos.x()).arg(m_icon_pos.y()));
 
@@ -152,7 +157,7 @@ void MainWindow::switch_hud (HWND parent_window)
     }
 
     // Click icon
-    send_click (icon_x, icon_y, hud_win.hwnd);
+    send_click (m_icon_pos.x(), m_icon_pos.y(), hud_win.hwnd);
     Sleep (200);
 
     // Initiate menu clicking sequence
@@ -171,28 +176,30 @@ void MainWindow::switch_hud (HWND parent_window)
                     .arg(window.rect.x())
                     .arg(window.rect.y()));
 
-                fdp = QPoint(window.rect.x(), window.rect.y());
-
-                log(QString("Sending first click at %1x%2").arg(pwr.left + 300).arg(pwr.top + 50));
-
-                PostMessage (command_window, WM_COMMAND, 0x1782, 0);
-                //send_click (fdp.x() + 100, fdp.y() + 185, window.hwnd, false);
-                //DestroyWindow(window.hwnd);
-                send_click (pwr.left + 300, pwr.top + 50);
-                //BringWindowToTop(parent_window);
-                //SetActiveWindow(parent_window);
-                //SetFocus(parent_window);
+                PostMessage (command_window, WM_COMMAND, 6011 + m_settings.value("hud_index").toInt(), 0);
+                PostMessage (window.hwnd, WM_CLOSE, 0, 0);
 
                 finished = true;
             }
         }
         Sleep (10);
     }
+
+    m_pending_switches.remove(parent_window);
 }
 
 bool MainWindow::exact_icon_search(QPixmap src, QPixmap icon, int x, int y) {
     QImage src_image = src.toImage();
     QImage icon_image = icon.toImage();
+
+    if (x + icon.width() > src.width())
+        return false;
+
+    if (y + icon.height() > src.height())
+        return false;
+
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
 
     for (int i = 0; i < icon.width(); i++) {
         for (int j = 0; j < icon.height(); j++) {
@@ -223,16 +230,19 @@ void MainWindow::send_click (int x, int y, HWND window, bool translate)
     pt.x = x;
     pt.y = y;
 
-    if (window == NULL)
+    if (window == NULL) {
         window = WindowFromPoint (pt);
+        qDebug() << "win from point : " << QString::number(quintptr(window), 16);
+    }
 
     if (translate)
         ScreenToClient(window, &pt);
 
     LPARAM coordinates = MAKELPARAM (pt.x, pt.y);
 
-    qDebug() << "Buttondown result = " << PostMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, coordinates);
-    qDebug() << "Buttunup   result = " << PostMessageA(window, WM_LBUTTONUP, 0, coordinates);
+    qDebug() << "Sending click to " << QString::number (quintptr(window), 16) << " at " << pt.x << ", " << pt.y << " | original coords : " << x << ", " << y;
+    PostMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, coordinates);
+    PostMessageA(window, WM_LBUTTONUP, 0, coordinates);
 }
 
 DWORD MainWindow::get_pid(QString proc_name)

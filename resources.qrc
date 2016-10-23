@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/resources">
+        <file>swapper_icon.png</file>
+        <file>pt4_icon.png</file>
+    </qresource>
+</RCC>

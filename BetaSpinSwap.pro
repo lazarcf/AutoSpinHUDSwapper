@@ -23,3 +23,6 @@ FORMS    += mainwindow.ui
 LIBS += -luser32
 LIBS += -lkernel32
 LIBS += -lpsapi
+
+RESOURCES += \
+    resources.qrc
