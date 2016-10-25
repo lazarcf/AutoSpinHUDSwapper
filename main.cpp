@@ -8,5 +8,7 @@ int main(int argc, char *argv[])
     w.show();
 
     a.setQuitOnLastWindowClosed(false);
+
+    qRegisterMetaType<HWND>("HWND");
     return a.exec();
 }

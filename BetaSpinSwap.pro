@@ -14,9 +14,11 @@ TEMPLATE = app
 
 SOURCES += main.cpp\
         mainwindow.cpp \
-    winhacks.cpp
+    winhacks.cpp \
+    utils.cpp
 
-HEADERS  += mainwindow.h
+HEADERS  += mainwindow.h \
+    utils.h
 
 FORMS    += mainwindow.ui
 
@@ -26,3 +28,5 @@ LIBS += -lpsapi
 
 RESOURCES += \
     resources.qrc
+
+RC_FILE = swapper.rc

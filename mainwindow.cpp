@@ -5,6 +5,7 @@
 #include <QInputDialog>
 #include <QFileDialog>
 #include <functional>
+#include <QThread>
 
 QString get_appdata_folder();
 
@@ -94,6 +95,7 @@ MainWindow::MainWindow(QWidget *parent) :
     m_fs_timer->start(1000);
 
     QTimer::singleShot(900, this, SLOT(switch_pending()));
+    log("version 1.0.0");
 }
 
 void MainWindow::show_hide_window() {
@@ -184,7 +186,8 @@ bool MainWindow::search_hh_file(QString path)
         if (line.contains("finished the tournament in 3rd place")) {
             QString username = line.left(line.indexOf("finished")-1);
 
-            log (username + " has left in 3rd place");
+            if (!m_old_files.contains(path))
+                log (username + " has left in 3rd place");
 
             if (username.trimmed().toLower() != m_username.trimmed().toLower()) {
                 finished = true;
@@ -220,8 +223,8 @@ void MainWindow::fs_check()
                 if (window.title.contains(tourney_id) && search_hh_file (entry.filePath())) {
                     log ("Switching hud for window " + QString::number(quintptr(window.hwnd),16));
 
-                    m_pending_switches.insert(window.hwnd);
                     switch_hud(window.hwnd);
+
                     break;
                 }
             }
@@ -430,9 +433,37 @@ void MainWindow::on_hh_path_button_clicked()
 }
 
 void MainWindow::switch_pending() {
-    foreach(HWND win, m_pending_switches) {
+    foreach(HWND win, m_pending_switches.keys()) {
         switch_hud(win);
     }
 
     QTimer::singleShot(900, this, SLOT(switch_pending()));
+}
+
+void MainWindow::switch_hud(HWND win) {
+    if (m_pending_switches.contains(win)) {
+        if (m_pending_switches[win]->isFinished())
+            delete m_pending_switches[win];
+        else
+            return;
+    }
+
+    QThread * thread = new QThread;
+    switch_worker_t *worker = new switch_worker_t(win, m_settings.value("hud_index", 7).toInt());
+
+    worker->moveToThread(thread);
+
+    connect(thread, SIGNAL(started()), worker, SLOT(work()));
+    connect(worker, SIGNAL(log(QString)), this, SLOT(log(QString)));
+    connect(worker, SIGNAL(remove_pending(HWND)), this, SLOT(remove_pending_switch(HWND)));
+    connect(worker, SIGNAL(finished()), thread, SLOT(quit()));
+    connect(worker, SIGNAL(finished()), worker, SLOT(deleteLater()));
+
+    thread->start();
+
+    m_pending_switches_mutes.lock();
+
+    m_pending_switches[win] = thread;
+
+    m_pending_switches_mutes.unlock();
 }

@@ -1,13 +1,193 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
-#include "ShlObj.h"
-#include "TlHelp32.h"
+#include <QMutex>
+#include <QScreen>
+#include <QTime>
+#include "utils.h"
 
-MainWindow * g_mw;
-QVector<HHOOK>   hooks;
+void switch_worker_t::work() {
+    switch_hud();
+    emit finished();
+}
 
-LRESULT WINAPI CallWndProc(int nCode, WPARAM wParam, LPARAM lParam);
+void switch_worker_t::switch_hud ()
+{
+    if (!IsWindow(parent_window)) {
+        emit remove_pending(parent_window);
+        return;
+    }
 
+    DWORD            hud_pid        = get_pid("PokerTrackerHud4.exe");
+    QVector<cWindow> hud_windows    = get_windows(hud_pid);
+    RECT             pwr;
+    cWindow          hud_win;
+    HWND             command_window = 0;
+
+    if(hud_windows.size() == 0)
+        return;
+
+    // Search for HUD window which overlays parent_window
+
+    GetWindowRect(parent_window, &pwr);
+
+    for (int i = 0; i < hud_windows.length(); i++) {
+        const cWindow & window = hud_windows.at(i);
+
+        if (window.rect.left() <= pwr.left && window.rect.top() <= pwr.top &&
+                window.rect.bottom() >= pwr.bottom && window.rect.right() >= pwr.right) {
+            hud_win = window;
+        }
+
+        if (window.class_name == "wxWindowNR")
+            command_window = window.hwnd;
+    }
+
+    if  (hud_win.hwnd == 0) {
+        log ("Failed to find hud window");
+        return;
+    }
+
+    if (command_window == 0) {
+        log ("Failed to find command window");
+        return;
+    }
+
+    QString rect_info = QString (" | location = (%1, %2) | size = %3x%4").arg(hud_win.rect.x()).arg(hud_win.rect.y()).arg(hud_win.rect.width()).arg(hud_win.rect.height());
+    log ("Found hud window " + QString::number(quintptr(hud_win.hwnd),16) + rect_info);
+
+    // Search for icon in the top section of the overlay window
+    QPixmap icon   = QPixmap(":/resources/pt4_icon.png");
+    QPixmap screenshot;
+    QPoint screen_offset(0, 0);
+
+    if (qApp->screens().size() == 1) {
+        screenshot = qApp->screens().first()->grabWindow(0);
+        screen_offset = qApp->screens().first()->geometry().topLeft();
+    }
+    else {
+        log ("Found multiple screens");
+
+        foreach (auto screen, qApp->screens()) {
+            if (screen->geometry().contains(pwr.left, pwr.top, false)) {
+                screenshot = screen->grabWindow(0,
+                                                screen->geometry().x(), screen->geometry().y(),
+                                                screen->geometry().width(), screen->geometry().height());
+                screen_offset = screen->geometry().topLeft();
+                log ("Found PS window inside screen " + screen->name());
+                break;
+            }
+            else
+                log (QString ("Did not find PS window (%1, %2) inside screen " + screen->name() + " , geometry = %3, %4").
+                     arg(pwr.left).arg(pwr.top).arg(screen->geometry().x()).arg(screen->geometry().y()));
+        }
+    }
+
+    screenshot.save("C:/Users/Claudiu/Desktop/ss.png");
+
+    int icon_x = -1, icon_y = -1;
+
+    int region_height = 200;
+    if (pwr.bottom - pwr.top < 200)
+        region_height = pwr.bottom - pwr.top;
+
+    region_icon_search (screenshot, icon,
+                        pwr.left - screen_offset.x(), pwr.top - screen_offset.y(),
+                        pwr.right - pwr.left, region_height,
+                        icon_x, icon_y);
+
+    if (icon_x == -1 || icon_y == -1) {
+        log ("Failed to find icon");
+        return;
+    }
+
+    log(QString("Found icon at %1x%2").arg(icon_x).arg(icon_y));
+
+    icon_x += screen_offset.x();
+    icon_y += screen_offset.y();
+
+    // Don't click until all HUD context menus are destroyed
+    QTime timeout;
+    timeout.start();
+
+    while (true) {
+        hud_windows = get_windows (hud_pid);
+
+        if (hud_windows.size() == 0)
+            return;
+
+        bool good_to_go = true;
+
+        for (int i = 0; i < hud_windows.length(); i++) {
+            const cWindow & window = hud_windows.at(i);
+
+            if (window.class_name == "#32768") {
+                if (timeout.elapsed() > 3000)
+                    PostMessage (window.hwnd, WM_CLOSE, 0, 0);
+
+                good_to_go = false;
+                break;
+            }
+        }
+        if (good_to_go)
+            break;
+
+        Sleep (100);
+
+        if (timeout.elapsed() > 5000)
+            return;
+    }
+
+    // Click icon
+    send_click (icon_x, icon_y, hud_win.hwnd);
+    Sleep (200);
+
+    // Initiate menu clicking sequence
+    bool finished = false;
+    timeout.restart();
+
+    while (!finished) {
+        hud_windows = get_windows (hud_pid);
+
+        if(hud_windows.size() == 0)
+            return;
+
+        for (int i = 0; i < hud_windows.length(); i++) {
+            const cWindow & window = hud_windows.at(i);
+
+            if (window.class_name == "#32768" && window.rect.x() != 0) {
+                log(QString("HWND = %1 | x = %2 | y = %3")
+                    .arg(QString::number(quintptr(window.hwnd)))
+                    .arg(window.rect.x())
+                    .arg(window.rect.y()));
+
+                PostMessage (command_window, WM_COMMAND, 6011 + hud_index, 0);
+                PostMessage (window.hwnd, WM_CLOSE, 0, 0);
+
+                finished = true;
+            }
+        }
+
+        Sleep (10);
+
+        if (!finished && timeout.elapsed() > 1500)
+            return;
+    }
+
+    emit remove_pending(parent_window);
+}
+
+void MainWindow::remove_pending_switch(HWND win) {
+    m_pending_switches_mutes.lock();
+
+    m_pending_switches.remove(win);
+
+    m_pending_switches_mutes.unlock();
+}
+
+//MainWindow * g_mw;
+//QVector<HHOOK>   hooks;
+
+//LRESULT WINAPI CallWndProc(int nCode, WPARAM wParam, LPARAM lParam);
 //void MainWindow::test_hook()  {
 //    DWORD            hud_pid        = get_pid("PokerTrackerHud4.exe");
 //    HANDLE           hThreadSnap    = INVALID_HANDLE_VALUE;
@@ -63,259 +243,3 @@ LRESULT WINAPI CallWndProc(int nCode, WPARAM wParam, LPARAM lParam);
 //        return CallNextHookEx(myhookdata[IDM_CALLWNDPROC].hhook, nCode, wParam, lParam);
 
 //}
-
-void MainWindow::switch_hud (HWND parent_window)
-{
-    DWORD            hud_pid        = get_pid("PokerTrackerHud4.exe");
-    QVector<cWindow> hud_windows    = get_windows(hud_pid);
-    RECT             pwr;
-    cWindow          hud_win;
-    HWND             command_window = 0;
-
-    // Search for HUD window which overlays parent_window
-
-    GetWindowRect(parent_window, &pwr);
-
-    for (int i = 0; i < hud_windows.length(); i++) {
-        const cWindow & window = hud_windows.at(i);
-
-        if (window.rect.left() <= pwr.left && window.rect.top() <= pwr.top &&
-                window.rect.bottom() >= pwr.bottom && window.rect.right() >= pwr.right) {
-            hud_win = window;
-        }
-
-        if (window.class_name == "wxWindowNR")
-            command_window = window.hwnd;
-    }
-
-    if  (hud_win.hwnd == 0) {
-        log ("Failed to find hud window");
-        return;
-    }
-
-    if (command_window == 0) {
-        log ("Failed to find command window");
-        return;
-    }
-
-    QString rect_info = QString (" | location = (%1, %2) | size = %3x%4").arg(hud_win.rect.x()).arg(hud_win.rect.y()).arg(hud_win.rect.width()).arg(hud_win.rect.height());
-    log ("Found hud window " + QString::number(quintptr(hud_win.hwnd),16) + rect_info);
-
-    QPixmap icon   = QPixmap(":/resources/pt4_icon.png");
-    QPixmap screen = QPixmap::grabWindow(QApplication::desktop()->winId());
-    int icon_x = -1, icon_y = -1;
-
-    // Search for icon in the top section of the overlay window
-
-    screen = QPixmap::grabWindow(QApplication::desktop()->winId());
-
-    if (m_icon_pos.x() == -1 || !exact_icon_search (screen, icon, hud_win.rect.x() + m_icon_pos.x(), hud_win.rect.y() + m_icon_pos.y())) {
-        log (QString("searching for icon @ %1x%2 , %3x%4").arg(hud_win.rect.x()).arg(hud_win.rect.y()).arg(hud_win.rect.width()).arg(150));
-
-        int height = 200;
-        if (hud_win.rect.height() < height)
-            height = hud_win.rect.height();
-
-        region_icon_search (screen, icon,
-                            hud_win.rect.x(), hud_win.rect.y(),
-                            hud_win.rect.width(), height,
-                            icon_x, icon_y);
-
-        if (icon_x == -1) {
-            log ("Failed to find icon");
-            return;
-        }
-        else {
-            m_icon_pos.setX(icon_x);
-            m_icon_pos.setY(icon_y);
-        }
-    }
-
-    // not sure why i added this?
-    //icon_x = hud_win.rect.x() + m_icon_pos.x();
-    //icon_y = hud_win.rect.y() + m_icon_pos.y();
-
-    log(QString("Found icon at %1x%2").arg(m_icon_pos.x()).arg(m_icon_pos.y()));
-
-    // Don't click until all HUD context menus are destroyed
-    while (true) {
-        hud_windows = get_windows (hud_pid);
-        bool good_to_go = true;
-
-        for (int i = 0; i < hud_windows.length(); i++) {
-            const cWindow & window = hud_windows.at(i);
-
-            if (window.class_name == "#32768") {
-                good_to_go = false;
-                break;
-            }
-        }
-        if (good_to_go)
-            break;
-
-        Sleep (100);
-    }
-
-    // Click icon
-    send_click (m_icon_pos.x(), m_icon_pos.y(), hud_win.hwnd);
-    Sleep (200);
-
-    // Initiate menu clicking sequence
-    QPoint fdp(-1, -1);
-    bool finished = false;
-
-    while (!finished) {
-        hud_windows = get_windows (hud_pid);
-
-        for (int i = 0; i < hud_windows.length(); i++) {
-            const cWindow & window = hud_windows.at(i);
-
-            if (fdp.x() == -1 && window.class_name == "#32768" && window.rect.x() != 0) {
-                log(QString("HWND = %1 | x = %2 | y = %3")
-                    .arg(QString::number(quintptr(window.hwnd)))
-                    .arg(window.rect.x())
-                    .arg(window.rect.y()));
-
-                PostMessage (command_window, WM_COMMAND, 6011 + m_settings.value("hud_index").toInt(), 0);
-                PostMessage (window.hwnd, WM_CLOSE, 0, 0);
-
-                finished = true;
-            }
-        }
-        Sleep (10);
-    }
-
-    m_pending_switches.remove(parent_window);
-}
-
-bool MainWindow::exact_icon_search(QPixmap src, QPixmap icon, int x, int y) {
-    QImage src_image = src.toImage();
-    QImage icon_image = icon.toImage();
-
-    if (x + icon.width() > src.width())
-        return false;
-
-    if (y + icon.height() > src.height())
-        return false;
-
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-
-    for (int i = 0; i < icon.width(); i++) {
-        for (int j = 0; j < icon.height(); j++) {
-            if (src_image.pixel(x + i, y + j) != icon_image.pixel(i, j))
-                return false;
-        }
-    }
-
-    return true;
-}
-
-void MainWindow::region_icon_search(QPixmap src, QPixmap icon, int in_x, int in_y, int in_w, int in_h, int & out_x, int & out_y)
-{
-    for (int x = in_x; x < in_x + in_w - icon.width(); x++) {
-        for (int y = in_y; y < in_y + in_h - icon.height(); y++) {
-            if (exact_icon_search(src, icon, x, y)) {
-                out_x = x;
-                out_y = y;
-                return;
-            }
-        }
-    }
-}
-
-void MainWindow::send_click (int x, int y, HWND window, bool translate)
-{
-    POINT pt;
-    pt.x = x;
-    pt.y = y;
-
-    if (window == NULL) {
-        window = WindowFromPoint (pt);
-        qDebug() << "win from point : " << QString::number(quintptr(window), 16);
-    }
-
-    if (translate)
-        ScreenToClient(window, &pt);
-
-    LPARAM coordinates = MAKELPARAM (pt.x, pt.y);
-
-    qDebug() << "Sending click to " << QString::number (quintptr(window), 16) << " at " << pt.x << ", " << pt.y << " | original coords : " << x << ", " << y;
-    PostMessageA(window, WM_LBUTTONDOWN, MK_LBUTTON, coordinates);
-    PostMessageA(window, WM_LBUTTONUP, 0, coordinates);
-}
-
-DWORD MainWindow::get_pid(QString proc_name)
-{
-    DWORD aProcesses[1024], cbNeeded, cProcesses;
-
-    if (!EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded))
-        return 0;
-
-    cProcesses = cbNeeded / sizeof(DWORD);
-    for (unsigned int i = 0; i < cProcesses; i++ ) {
-        CHAR szProcessName[MAX_PATH] = "<unknown>";
-
-        HANDLE hProcess = OpenProcess( PROCESS_QUERY_INFORMATION |
-                                       PROCESS_VM_READ,
-                                       FALSE, aProcesses[i] );
-        if (NULL != hProcess )
-        {
-            HMODULE hMod;
-            DWORD cbNeeded;
-
-            if ( EnumProcessModules( hProcess, &hMod, sizeof(hMod),
-                                     &cbNeeded) )
-            {
-                GetModuleBaseNameA(hProcess, hMod, szProcessName, MAX_PATH);
-            }
-        }
-        if (QString(szProcessName) == proc_name)
-            return aProcesses [i];
-
-    }
-
-    return 0;
-}
-
-
-BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
-{
-    QPair<DWORD, QVector<cWindow>*> *params = (QPair<DWORD, QVector<cWindow>*>*)lParam;
-
-    DWORD hud_pid = params->first;
-    DWORD current_window_pid = 0;
-    QVector <cWindow> * hud_windows = params->second;
-
-    GetWindowThreadProcessId (hwnd, &current_window_pid);
-
-    if (current_window_pid == hud_pid) {
-        char class_name[300] = "unknown";
-        char title[300] = "-";
-        GetClassNameA (hwnd, class_name, 300);
-
-        RECT wr;
-        GetWindowRect (hwnd, &wr);
-        GetWindowTextA(hwnd, title, 300);
-
-        cWindow window;
-        window.hwnd = hwnd;
-        window.class_name = QString (class_name);
-        window.rect = QRect(wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top);
-        window.title = QString (title);
-
-        hud_windows->push_back(window);
-    }
-
-    return TRUE;
-}
-
-QVector<cWindow> MainWindow::get_windows (DWORD pid) {
-    QVector<cWindow> windows;
-
-    QPair<DWORD, QVector<cWindow>*> pair (pid, &windows);
-
-    EnumWindows (&EnumWindowsProc, (LPARAM)&pair);
-
-    return windows;
-}

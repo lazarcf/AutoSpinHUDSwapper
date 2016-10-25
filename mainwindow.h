@@ -2,6 +2,8 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QThread>
+#include <QMutex>
 #include <QMenu>
 #include <QDesktopWidget>
 #include <QDebug>
@@ -15,20 +17,34 @@
 #include <QDir>
 #include <QTimer>
 #include <QSettings>
+#include "utils.h"
 
 namespace Ui {
 class MainWindow;
 }
 
-struct cWindow{
-    cWindow() {
-        hwnd = 0;
-    }
+class switch_worker_t : public QObject {
+    Q_OBJECT
 
-    HWND hwnd;
-    QString class_name;
-    QString title;
-    QRect rect;
+public:
+    switch_worker_t(HWND parent_window, int hud_index):
+        parent_window(parent_window),
+        hud_index(hud_index)
+    {}
+    //~switch_worker_t();
+
+public slots:
+    void work();
+    void switch_hud();
+
+signals:
+    void finished();
+    void remove_pending(HWND window);
+    void log(QString);
+
+private:
+    HWND parent_window;
+    int hud_index;
 };
 
 class MainWindow : public QMainWindow
@@ -38,10 +54,10 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = 0);
     ~MainWindow();
-
-    void log(QString);
-
     void changeEvent (QEvent *);
+
+public slots:
+    void log(QString);
 
 private slots:
     void on_pushButton_clicked();
@@ -65,18 +81,19 @@ private slots:
 
     void switch_pending();
 
+    void remove_pending_switch(HWND);
+
 private:
-    //void test_hook();
     void switch_hud(HWND parent_window);
-    bool exact_icon_search(QPixmap src, QPixmap icon, int x, int y);
-    void region_icon_search(QPixmap src, QPixmap icon, int in_x, int in_y, int in_w, int in_h, int & out_x, int & out_y);
-    void send_click (int x, int y, HWND window = NULL, bool translate=true);
+    //bool exact_icon_search(QPixmap src, QPixmap icon, int x, int y);
+    //void region_icon_search(QPixmap src, QPixmap icon, int in_x, int in_y, int in_w, int in_h, int & out_x, int & out_y);
+    //void send_click (int x, int y, HWND window = NULL, bool translate=true);
     void test_switch();
 
-    DWORD get_pid(QString proc_name);
-    QVector<cWindow> get_windows (DWORD hud_pid);
+    //DWORD get_pid(QString proc_name);
+    //QVector<cWindow> get_windows (DWORD hud_pid);
 
-    QSet<HWND> m_pending_switches;
+    QMap<HWND, QThread*> m_pending_switches;
 
     bool search_hh_file (QString path);
 
@@ -94,6 +111,7 @@ private:
     QPoint m_icon_pos;
 
     QString m_hh_path;
+    QMutex m_pending_switches_mutes;
 };
 
 #endif // MAINWINDOW_H
