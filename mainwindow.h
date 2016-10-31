@@ -55,6 +55,7 @@ public:
     explicit MainWindow(QWidget *parent = 0);
     ~MainWindow();
     void changeEvent (QEvent *);
+    void closeEvent (QCloseEvent *);
 
 public slots:
     void log(QString);
@@ -99,6 +100,9 @@ private:
 
     Ui::MainWindow *ui;
 
+    bool m_showing_window;
+    int m_tray_info_counter;
+
     QSettings m_settings;
 
     QSystemTrayIcon m_systray;
@@ -111,7 +115,7 @@ private:
     QPoint m_icon_pos;
 
     QString m_hh_path;
-    QMutex m_pending_switches_mutes;
+    QMutex m_pending_switches_mutex;
 };
 
 #endif // MAINWINDOW_H

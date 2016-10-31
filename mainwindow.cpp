@@ -25,6 +25,9 @@ MainWindow::MainWindow(QWidget *parent) :
 {
     ui->setupUi(this);
 
+    m_showing_window = false;
+    m_tray_info_counter = 1;
+
     if (!m_settings.contains("hud_index"))
         m_settings.setValue("hud_index", 7);
 
@@ -100,11 +103,20 @@ MainWindow::MainWindow(QWidget *parent) :
 
 void MainWindow::show_hide_window() {
     if (this->isHidden()) {
+        m_showing_window = true;
         this->show();
         ShowWindow ((HWND)this->effectiveWinId(), SW_SHOWNORMAL);
+
+        qApp->processEvents();
+        m_showing_window = false;
     }
-    else
+    else {
+        if (m_tray_info_counter < 3) {
+            m_systray.showMessage("Info", "Minimized swapper to tray", QSystemTrayIcon::Information, 2000);
+            m_tray_info_counter++;
+        }
         this->hide();
+    }
 }
 
 void MainWindow::tray_activated_slot(QSystemTrayIcon::ActivationReason reason) {
@@ -113,8 +125,20 @@ void MainWindow::tray_activated_slot(QSystemTrayIcon::ActivationReason reason) {
 }
 
 void MainWindow::changeEvent (QEvent *) {
-    if (this->windowState() & Qt::WindowMinimized) {
+    if (this->windowState() & Qt::WindowMinimized && !m_showing_window) {
         this->hide();
+
+        if (m_tray_info_counter < 3) {
+            m_systray.showMessage("Info", "Minimized swapper to tray", QSystemTrayIcon::Information, 2000);
+            m_tray_info_counter++;
+        }
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *) {
+    if (m_tray_info_counter < 3) {
+        m_systray.showMessage("Info", "Minimized swapper to tray", QSystemTrayIcon::Information, 2000);
+        m_tray_info_counter++;
     }
 }
 
@@ -441,11 +465,17 @@ void MainWindow::switch_pending() {
 }
 
 void MainWindow::switch_hud(HWND win) {
+    m_pending_switches_mutex.lock();
+
     if (m_pending_switches.contains(win)) {
-        if (m_pending_switches[win]->isFinished())
+        if (m_pending_switches[win]->isFinished()) {
+            log ("Deleting thread " + QString::number(quintptr(m_pending_switches[win]), 16));
             delete m_pending_switches[win];
-        else
+        }
+        else {
+            m_pending_switches_mutex.unlock();
             return;
+        }
     }
 
     QThread * thread = new QThread;
@@ -460,10 +490,9 @@ void MainWindow::switch_hud(HWND win) {
     connect(worker, SIGNAL(finished()), worker, SLOT(deleteLater()));
 
     thread->start();
-
-    m_pending_switches_mutes.lock();
+    log ("Creating new thread " + QString::number(quintptr(thread), 16));
 
     m_pending_switches[win] = thread;
 
-    m_pending_switches_mutes.unlock();
+    m_pending_switches_mutex.unlock();
 }

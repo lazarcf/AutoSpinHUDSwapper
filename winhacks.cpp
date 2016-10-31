@@ -82,7 +82,7 @@ void switch_worker_t::switch_hud ()
         }
     }
 
-    screenshot.save("C:/Users/Claudiu/Desktop/ss.png");
+    //screenshot.save("C:/Users/Claudiu/Desktop/ss.png");
 
     int icon_x = -1, icon_y = -1;
 
@@ -177,11 +177,19 @@ void switch_worker_t::switch_hud ()
 }
 
 void MainWindow::remove_pending_switch(HWND win) {
-    m_pending_switches_mutes.lock();
+    m_pending_switches_mutex.lock();
+
+    log ("Deleting thread " + QString::number(quintptr(m_pending_switches[win]), 16));
+    QThread *thread = m_pending_switches[win];
+
+    if (!thread->isFinished())
+        connect(thread, SIGNAL(finished()), thread, SLOT(deleteLater()));
+    else
+        thread->deleteLater();
 
     m_pending_switches.remove(win);
 
-    m_pending_switches_mutes.unlock();
+    m_pending_switches_mutex.unlock();
 }
 
 //MainWindow * g_mw;
